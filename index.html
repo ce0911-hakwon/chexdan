@@ -158,6 +158,11 @@ h1{margin:0;font-family:var(--f-display);font-weight:400;font-size:32px;line-hei
 .fmt-fields{display:flex;flex-direction:column;gap:14px}
 .upd{position:fixed;left:12px;right:12px;top:calc(10px + env(safe-area-inset-top,0px));z-index:40;max-width:536px;margin-inline:auto;background:var(--ink);color:var(--bg);border-radius:12px;padding:10px 10px 10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:14px;font-weight:500;box-shadow:0 6px 18px rgba(0,0,0,.25)}
 .upd button{min-height:40px;border:0;border-radius:9px;background:var(--accent);color:var(--accent-ink);font-weight:700;padding:0 16px}
+.photo .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.queue{display:flex;gap:8px;overflow-x:auto;padding-block:2px}
+.qi{position:relative;flex:none}
+.qi img{height:72px;width:auto;border-radius:8px;border:1px solid var(--line);display:block}
+.qi button{position:absolute;top:-6px;right:-6px;width:24px;height:24px;border-radius:50%;border:0;background:var(--ink);color:var(--bg);font-size:12px;padding:0}
 </style>
 </head>
 <body>
@@ -190,8 +195,11 @@ h1{margin:0;font-family:var(--f-display);font-weight:400;font-size:32px;line-hei
   </div>
   <div class="photo" id="photo">
     <p>체험단 공고 화면을 캡처해서 올리면 이 기기에서 글자를 읽어 아래 칸을 채워요. 사진은 서버로 보내지 않고, 다 읽으면 바로 지워요.</p>
-    <button type="button" class="btn" id="photo-btn">사진으로 자동 입력</button>
+    <p>여러 장을 한 번에 고르거나, 한 장씩 계속 추가해도 돼요. 다 고른 뒤 "읽기 시작"을 누르세요.</p>
+    <button type="button" class="btn" id="photo-btn">사진 올리기</button>
     <input id="f-photo" type="file" accept="image/*" multiple hidden>
+    <div class="queue" id="queue" hidden></div>
+    <button type="button" class="btn primary" id="photo-go" hidden>읽기 시작</button>
     <p class="stat" id="stat" role="status"></p>
     <button type="button" class="btn" id="photo-stop" hidden>읽기 취소</button>
     <p id="tplnote"></p>

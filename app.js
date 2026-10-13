@@ -58,6 +58,7 @@
       if(d.length<=6)return d.slice(0,2)+'-'+d.slice(2);
       return d.slice(0,2)+'-'+d.slice(2,d.length-4)+'-'+d.slice(d.length-4);
     }
+    if(d.length===8&&/^1[5-9]/.test(d))return d.slice(0,4)+'-'+d.slice(4);
     if(d.length<=3)return d;
     if(d.length<=7)return d.slice(0,3)+'-'+d.slice(3);
     return d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7);
@@ -75,16 +76,26 @@
   function removeItem(id){items=items.filter(function(i){return i.id!==id});saveItems();idbDel(id);render()}
 
   /* =====================================================
-     글자 인식 결과 → 항목 매칭 (규칙 기반)
+     글자 인식 결과 → 항목 매칭 (규칙 기반, 비슷한 말도 인식)
      ===================================================== */
+  // 항목 제목을 정확히 아는 말. 플랫폼별로 "인식 형식"에서 더 추가할 수 있어요.
   var DEF={
-    offer:['제공서비스/물품','제공 서비스/물품','제공서비스','제공 서비스','제공내역','제공 내역','제공물품','제공 물품'],
+    offer:['제공서비스/물품','제공 서비스','제공내역','제공 내역','제공물품','제공 물품'],
     keywords:['키워드 정보','필수 키워드','키워드'],
-    phone:['담당자 연락처','업체 연락처','연락처'],
-    notice:['방문 및 예약 안내','예약 및 방문 안내','방문 안내','예약 안내','예약 유의사항','예약 및 방문','유의사항'],
-    stop:['체험단 미션','캠페인 미션','리뷰 미션','방문 정보','리뷰 작성','리뷰 가이드','신청 정보','체험단 정보','참고사항','추가 안내','기타 안내','선정 안내','리뷰 안내','캠페인 정보','주의사항','위치 정보','매장 정보']
+    phone:['담당자 연락처','업체 연락처','가게 번호','매장 번호','예약 번호','연락처'],
+    notice:['방문 및 예약 안내','예약 및 방문 안내','방문 안내','예약 안내','예약 유의사항','유의사항'],
+    stop:['체험단 미션','캠페인 미션','리뷰 미션','방문 정보','리뷰 작성','리뷰 가이드','신청 정보','체험단 정보','참고사항','추가 안내','기타 안내','선정 안내','리뷰 안내','캠페인 정보','주의사항','위치 정보','매장 정보','위치','지도','오시는 길']
   };
-  function norm(s){return String(s).replace(/[\s​|ㅣ]/g,'')}
+  // 정확히 같지 않아도 이런 말이 들어 있으면 같은 항목으로 봐요.
+  var ROOT={
+    keywords:/키워드|해시태그|필수\s*문구|필수\s*태그/,
+    phone:/연락처|전화|번호|문의|핸드폰|휴대폰|담당자|TEL|Tel/,
+    offer:/제공|혜택|서비스|물품|내역|리워드|지급|메뉴/,
+    notice:/예약|방문|체험\s*(가능|안내|시간|일정|요일|방법)|가능\s*(시간|요일|일|날)|운영\s*시간|영업\s*시간|이용\s*(안내|방법)|유의|주의|공지|안내/
+  };
+  var NOTICE_LINE=/(체험|예약|방문|이용|운영|영업|오픈|휴무|브레이크|라스트)\s*(가능|불가|시간|요일|일정|안내|필수)|당일|노쇼|취소|예약\s*(필수|문의)|주차|휴무|공휴일|재방문/;
+  function norm(s){return String(s).replace(/[\s​|ㅣㆍ·•_:：]/g,'')}
+  function cleanLine(l){return l.replace(/\s+/g,' ').replace(/\s*(연락처\s*복사|키워드\s*복사|복사|더보기|접기)\s*$/,'').trim()}
   function headingTable(plat){
     var rows=[], T=(plat&&templates[plat])||{};
     ['offer','keywords','phone','notice'].forEach(function(f){
@@ -97,12 +108,20 @@
     return rows;
   }
   function headingOf(line,table){
-    var n=norm(line);
+    var n=norm(cleanLine(line));
     if(!n||n.length>40)return null;
     for(var i=0;i<table.length;i++){
       var sn=norm(table[i][1]);
       if(n.indexOf(sn)===0&&n.length<=sn.length+6)return {f:table[i][0],s:table[i][1]};
     }
+    // 비슷한 말: 짧고, 글머리나 숫자가 없고, 문장이 아닌 줄
+    var raw=cleanLine(line);
+    if(raw.length>16||/^[-•*·\d]/.test(raw)||/[.。,!?]$/.test(raw)||/\d/.test(raw)||/[:：]\s*\S/.test(raw))return null;
+    if(/[다요죠니까]$/.test(raw)||/(불가|불가능|가능|금지|필수|없음|있음|안됨)$/.test(raw))return null;
+    if(ROOT.keywords.test(raw))return {f:'keywords',s:raw,z:1};
+    if(ROOT.phone.test(raw))return {f:'phone',s:raw,z:1};
+    if(ROOT.notice.test(raw))return {f:'notice',s:raw,z:1};
+    if(ROOT.offer.test(raw))return {f:'offer',s:raw,z:1};
     return null;
   }
   function detectPlatform(text){
@@ -113,73 +132,171 @@
     if(/revu|레뷰/.test(t))return '레뷰';
     return '';
   }
-  function calendarDeadline(words){
-    var days=[], marks=[];
+
+  /* ----- 마감일 ----- */
+  function dayNum(w){
+    var t=String(w.text||'').replace(/[_\s|.,:;'"`~\-]/g,'');
+    var m=t.match(/^(\d{1,2})일?$/);
+    if(!m)return 0;
+    var n=+m[1];return(n>=1&&n<=31)?n:0;
+  }
+  // 달력 사진에서 분홍/빨강 알약(마감 표시)의 위치를 색으로 찾아요. 흰 글씨는 OCR이 못 읽기 때문이에요.
+  function findPills(img){
+    var W=img.naturalWidth||img.width, H=img.naturalHeight||img.height;
+    var s=Math.min(1,540/W), w=Math.max(1,Math.round(W*s)), h=Math.max(1,Math.round(H*s));
+    var c=document.createElement('canvas');c.width=w;c.height=h;
+    var cx=c.getContext('2d');cx.drawImage(img,0,0,w,h);
+    var d=cx.getImageData(0,0,w,h).data, mask=new Uint8Array(w*h);
+    for(var i=0,p=0;i<d.length;i+=4,p++){
+      var r=d[i],g=d[i+1],b=d[i+2];
+      if(r>185&&g<135&&b>45&&b<165&&r-b>55&&r-g>80)mask[p]=1;
+    }
+    var seen=new Uint8Array(w*h), out=[], stack=[];
+    for(var y0=0;y0<h;y0++)for(var x0=0;x0<w;x0++){
+      var k=y0*w+x0;
+      if(!mask[k]||seen[k])continue;
+      var minx=x0,maxx=x0,miny=y0,maxy=y0,area=0;
+      stack.length=0;stack.push(k);seen[k]=1;
+      while(stack.length){
+        var q=stack.pop(),qx=q%w,qy=(q-qx)/w;area++;
+        if(qx<minx)minx=qx;if(qx>maxx)maxx=qx;if(qy<miny)miny=qy;if(qy>maxy)maxy=qy;
+        for(var dy=-1;dy<=1;dy++)for(var dx=-1;dx<=1;dx++){
+          var nx=qx+dx,ny=qy+dy;
+          if(nx<0||ny<0||nx>=w||ny>=h)continue;
+          var nk=ny*w+nx;
+          if(mask[nk]&&!seen[nk]){seen[nk]=1;stack.push(nk)}
+        }
+      }
+      var bw=maxx-minx+1,bh=maxy-miny+1;
+      // 알약 모양: 가로로 길고 크기가 적당하고 속이 꽤 차 있음
+      if(bw>=bh*1.3&&bw<=bh*9&&bh>=7&&bh<=60&&area>=bw*bh*0.45){
+        out.push({cx:(minx+maxx)/2/s,cy:(miny+maxy)/2/s,w:bw/s,h:bh/s});
+      }
+    }
+    return out;
+  }
+  function calendarDay(words,pills){
+    var days=[];
     words.forEach(function(w){
-      var t=String(w.text||'').trim(), b=w.bbox;
-      if(!b)return;
-      var cx=(b.x0+b.x1)/2, cy=(b.y0+b.y1)/2, h=b.y1-b.y0;
-      var m=t.match(/^(\d{1,2})일$/);
-      if(m){var n=+m[1];if(n>=1&&n<=31)days.push({n:n,cx:cx,cy:cy,h:h})}
-      if(t==='마감')marks.push({cx:cx,cy:cy});
+      var n=dayNum(w),b=w.bbox;
+      if(n&&b)days.push({n:n,cx:(b.x0+b.x1)/2,cy:(b.y0+b.y1)/2,h:Math.max(1,b.y1-b.y0),x1:b.x1});
     });
+    if(days.length<14||!pills||!pills.length)return null;
     var best=null;
-    marks.forEach(function(mk){
-      days.forEach(function(d){
-        var dy=mk.cy-d.cy;
-        if(dy<=0||dy>d.h*5)return;
-        var score=dy+Math.abs(mk.cx-d.cx)*2;
-        if(!best||score<best.s)best={s:score,n:d.n,tol:d.h*7};
+    pills.forEach(function(pl){
+      days.forEach(function(dd){
+        var dy=pl.cy-dd.cy;
+        if(dy<=0||dy>dd.h*6)return;
+        var dx=Math.abs(pl.cx-dd.cx);
+        if(dx>Math.max(pl.w*0.75,dd.h*3))return;
+        var sc=dy+dx*2;
+        if(!best||sc<best.sc)best={sc:sc,n:dd.n,idx:days.indexOf(dd)};
       });
     });
-    if(!best||Math.abs(best.s)>best.tol)return null;
-    return best.n;
+    if(!best)return null;
+    // 달력 안에서 이 숫자가 이전 달/이번 달/다음 달 중 어디인지: 읽는 순서로 1이 두 번 나오는 구간을 이용
+    var seq=days.slice().sort(function(a,b){return (Math.round(a.cy/(a.h*2.2))-Math.round(b.cy/(b.h*2.2)))||(a.cx-b.cx)});
+    var pos=seq.findIndex(function(d){return d===days[best.idx]});
+    var ones=[];seq.forEach(function(d,i){if(d.n===1)ones.push(i)});
+    var shift=0;
+    if(ones.length>=2&&pos>=ones[1])shift=1;
+    else if(ones.length>=1&&pos<ones[0]&&seq[0].n>=22)shift=-1;
+    return {n:best.n,shift:shift};
   }
-  function resolveDay(day){
+  function resolveDay(day,shift){
     var t=new Date(), y=t.getFullYear(), m=t.getMonth()+1;
     var today=new Date(y,m-1,t.getDate());
     var cand=validDate(y,m,day);
     if(!cand){m++;if(m>12){m=1;y++}cand=validDate(y,m,day)}
     if(cand){
       var a=cand.split('-').map(Number),dt=new Date(a[0],a[1]-1,a[2]);
-      if((dt-today)/864e5<-20){m++;if(m>12){m=1;y++}cand=validDate(y,m,day)||cand}
+      if(!shift&&(dt-today)/864e5<-20){m++;if(m>12){m=1;y++}cand=validDate(y,m,day)||cand}
+    }
+    if(shift&&cand){
+      var b=cand.split('-').map(Number),mm=b[1]+shift,yy=b[0];
+      if(mm>12){mm=1;yy++}if(mm<1){mm=12;yy--}
+      cand=validDate(yy,mm,day)||cand;
     }
     return cand;
   }
-  function dateFromText(lines){
-    var now=new Date(), y=now.getFullYear();
-    var order=lines.filter(function(l){return /마감/.test(l)});
-    order.sort(function(a,b){return (/리뷰/.test(b)?1:0)-(/리뷰/.test(a)?1:0)});
-    for(var i=0;i<order.length;i++){
-      var l=order[i], m;
-      if((m=l.match(/(20\d{2})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})/))){var v=validDate(+m[1],+m[2],+m[3]);if(v)return v}
-      if((m=l.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/))||(m=l.match(/(\d{1,2})\s*[./]\s*(\d{1,2})(?!\d)/))){
-        var v2=validDate(y,+m[1],+m[2]);
-        if(v2){
-          var a=v2.split('-').map(Number);
-          if((new Date(a[0],a[1]-1,a[2])-now)/864e5<-60)v2=validDate(y+1,+m[1],+m[2])||v2;
-          return v2;
+  // "1월 1일 ~ 1월 5일", "10.04(토)~10.17(금)", "2026.10.4 - 2026.10.17" 같은 기간에서 끝 날짜
+  var DT='(?:(\\d{4})\\s*[.\\-/년]\\s*)?(\\d{1,2})\\s*[.\\-/월]\\s*(\\d{1,2})\\s*일?(?:\\s*\\([월화수목금토일]\\))?';
+  var RANGE=new RegExp(DT+'\\s*(?:[~∼〜～–—\\-]+|부터)\\s*(?:(\\d{4})\\s*[.\\-/년]\\s*)?(?:(\\d{1,2})\\s*[.\\-/월]\\s*)?(\\d{1,2})\\s*일?(?:\\s*\\([월화수목금토일]\\))?(?:\\s*까지)?');
+  var SINGLE=new RegExp(DT);
+  function toDate(y,m,d,refY,after){
+    var now=new Date(), yy=y?+y:(refY||now.getFullYear());
+    var v=validDate(yy,+m,+d);
+    if(v&&!y&&after){
+      var a=v.split('-').map(Number);
+      if(new Date(a[0],a[1]-1,a[2])<after){v=validDate(yy+1,+m,+d)||v}
+    }
+    return v;
+  }
+  function deadlineFromText(lines){
+    var now=new Date(), found=[];
+    for(var i=0;i<lines.length;i++){
+      var l=lines[i], ctx=l+' '+(lines[i-1]||'');
+      var m=l.match(RANGE);
+      if(m){
+        var sy=m[1],sm=+m[2],sd=+m[3],ey=m[4],em=m[5]?+m[5]:sm,ed=+m[6];
+        var start=toDate(sy,sm,sd,null,null), end=toDate(ey||sy,em,ed,null,null);
+        if(start&&end){
+          var sa=start.split('-').map(Number),ea=end.split('-').map(Number);
+          if(new Date(ea[0],ea[1]-1,ea[2])<new Date(sa[0],sa[1]-1,sa[2]))end=toDate(ey||sy,em+1,ed,null,null)||end;
+          var pr=/리뷰|체험|캠페인|마감|기간|일정/.test(ctx)?2:1;
+          if(/모집|신청|선정|발표|공고/.test(l)&&!/리뷰|체험|캠페인/.test(l))pr=0;
+          if(/리뷰/.test(l))pr+=2;
+          found.push({pr:pr,date:end,label:'기간의 끝 날짜'});
         }
       }
     }
+    if(found.length){found.sort(function(a,b){return b.pr-a.pr});if(found[0].pr>0)return found[0]}
+    for(var j=0;j<lines.length;j++){
+      var ln=lines[j];
+      if(!/마감|까지|기한/.test(ln)||/모집|신청|선정|발표/.test(ln)&&!/리뷰|체험/.test(ln))continue;
+      var s=ln.match(SINGLE);
+      if(s){var v=toDate(s[1],s[2],s[3],null,new Date(now.getFullYear(),now.getMonth(),now.getDate()-60));if(v)return {date:v,label:'마감 날짜 글'}}
+    }
+    return found[0]||null;
+  }
+
+  function fixDigits(s){
+    return s.replace(/(?<=[\d-])[Oo○](?=[\d-])|(?<=[\d-])[Il|](?=[\d-])|(?<=\d)[Oo○]|[Oo○](?=\d)/g,function(m){return /[Oo○]/.test(m)?'0':'1'});
+  }
+  var PHONE_RX=/(?:0\d{1,3}|1[5-9]\d{2})[-.\s]?\d{3,4}[-.\s]?\d{4}|1[5-9]\d{2}[-.\s]\d{4}/;
+  function findPhone(lines,hs,sectionLines){
+    var cands=[];
+    if(sectionLines)sectionLines.forEach(function(l){cands.push(l)});
+    lines.forEach(function(l,i){if(!hs[i]&&/연락처|전화|번호|문의|TEL|Tel|T\./.test(l))cands.push(l)});
+    for(var i=0;i<cands.length;i++){var m=fixDigits(cands[i]).match(PHONE_RX);if(m)return fmtPhone(m[0])}
+    for(var j=0;j<lines.length;j++){
+      if(hs[j])continue;
+      var m2=fixDigits(lines[j]).match(PHONE_RX);
+      if(m2&&!/\d{4}\s*[.\-/]\s*\d{1,2}\s*[.\-/]\s*\d{1,2}/.test(lines[j]))return fmtPhone(m2[0]);
+    }
     return '';
   }
-  function parseOCR(text,words){
-    var lines=text.split(/\r?\n/).map(function(l){return l.replace(/\s+/g,' ').trim()}).filter(function(l){return l&&norm(l)!=='복사'&&norm(l)!=='연락처복사'});
+
+  // pages: [{text, words, pills}]
+  function parseOCR(text,words,pages){
+    var lines=text.split(/\r?\n/).map(cleanLine).filter(function(l){return l&&norm(l)!==''&&norm(l)!=='복사'});
     var plat=detectPlatform(text);
     var table=headingTable(plat);
     var hs=lines.map(function(l){return headingOf(l,table)});
     var out={platform:plat,labels:{},calendar:false};
-    function section(f){
-      var idx=-1;
-      for(var i=0;i<lines.length;i++){if(hs[i]&&hs[i].f===f){idx=i;break}}
-      if(idx<0)return null;
-      var body=[];
-      for(var j=idx+1;j<lines.length&&!hs[j];j++)body.push(lines[j]);
-      out.labels[f]=hs[idx].s;
-      return body;
+    var BREAK=/^(모집|체험|리뷰|캠페인|선정|발표|신청)[^\n]{0,8}(기간|일정)\s*$/;
+    function isBreak(l){return RANGE.test(l)||BREAK.test(l)}
+    function sections(f){
+      var res=[];
+      for(var i=0;i<lines.length;i++){
+        if(!hs[i]||hs[i].f!==f)continue;
+        var body=[];
+        for(var j=i+1;j<lines.length&&!hs[j]&&!isBreak(lines[j]);j++)body.push(lines[j]);
+        res.push({head:hs[i].s,z:!!hs[i].z,body:body});
+      }
+      if(res.length)out.labels[f]=res[0].head;
+      return res;
     }
-    // 제목에서 가게 이름
     for(var i=0;i<lines.length;i++){
       var m=lines[i].match(/^\[[^\]]+\]\s*(.+)$/);
       if(m){
@@ -188,21 +305,39 @@
         out.store=name;break;
       }
     }
-    var o=section('offer');   if(o&&o.length)out.offer=o.join('\n');
-    var k=section('keywords');
-    if(k&&k.length){
+    var o=[];sections('offer').forEach(function(s){s.body.forEach(function(l){o.push(l)})});
+    if(o.length)out.offer=o.join('\n');
+    var kb=[];sections('keywords').forEach(function(s){s.body.forEach(function(l){kb.push(l)})});
+    if(kb.length){
       var kws=[];
-      k.join(' ').split(/[\s,#]+/).forEach(function(x){if(x.length>=2&&kws.indexOf(x)<0&&norm(x)!=='복사')kws.push(x)});
+      kb.join(' ').split(/[\s,#_]+/).forEach(function(x){if(x.length>=2&&kws.indexOf(x)<0&&norm(x)!=='복사')kws.push(x)});
       out.keywords=kws.slice(0,20);
     }
-    var n=section('notice');  if(n&&n.length)out.notice=n.join('\n');
-    var ph=section('phone'), rx=/(?:01[016789]|0\d{1,2})[-.\s]?\d{3,4}[-.\s]?\d{4}/;
-    var pm=ph&&ph.join(' ').match(rx);
-    if(!pm){var all=lines.filter(function(l,i){return !(hs[i])}).join(' ');pm=all.match(rx)}
-    if(pm)out.phone=fmtPhone(pm[0]);
-    var day=calendarDeadline(words||[]);
-    if(day){out.deadline=resolveDay(day);out.calendar=true;out.labels.deadline='달력의 마감 표시'}
-    else{var dt=dateFromText(lines);if(dt){out.deadline=dt;out.labels.deadline='마감 날짜 글'}}
+    var nt=[];
+    sections('notice').forEach(function(s){
+      var withHead=DEF.notice.indexOf(s.head)<0;
+      if(withHead)nt.push(s.body.length?s.head+': '+s.body.join(' '):s.head);
+      else s.body.forEach(function(l){nt.push(l)});
+    });
+    if(nt.length)out.notice=nt.join('\n');
+    else{
+      // 제목이 없을 때: 체험/예약/방문 관련 줄을 모아요
+      var picked=[];
+      lines.forEach(function(l,idx){if(!hs[idx]&&NOTICE_LINE.test(l)&&!/^\d+일$/.test(l)&&!PHONE_RX.test(fixDigits(l)))picked.push(l)});
+      if(picked.length){out.notice=picked.join('\n');out.labels.notice='예약·방문 관련 줄'}
+    }
+    var ph=[];sections('phone').forEach(function(s){s.body.forEach(function(l){ph.push(l)})});
+    var pn=findPhone(lines,hs,ph);
+    if(pn)out.phone=pn;
+
+    // 마감일: 달력의 마감 표시 → 기간의 끝 날짜 → 마감 날짜 글
+    var cal=null;
+    (pages||[]).forEach(function(pg){if(!cal)cal=calendarDay(pg.words||[],pg.pills||[])});
+    if(cal){out.deadline=resolveDay(cal.n,cal.shift);out.calendar=true;out.labels.deadline='달력의 마감 표시'}
+    else{
+      var dt=deadlineFromText(lines);
+      if(dt){out.deadline=dt.date;out.labels.deadline=dt.label;out.fromRange=dt.label==='기간의 끝 날짜'}
+    }
     return out;
   }
 
@@ -335,7 +470,7 @@
     pendingImgs=[];
     $('#err').textContent='';setStat('');
     var del=$('#del');del.hidden=!it;del.classList.remove('armed');del.textContent='삭제';
-    renderChips();renderKw();renderPhotoBox();renderImgs();
+    queue=[];renderChips();renderKw();renderPhotoBox();renderImgs();renderQueue();
     refreshMiss();paintMiss();
     $('#scrim').hidden=false;$('#sheet').hidden=false;lockBody(true);
     var key=editing||'draft', mine=editing;
@@ -346,7 +481,7 @@
     });
   }
   function closeSheet(){
-    cancelled=true;
+    cancelled=true;queue=[];
     $('#scrim').hidden=true;$('#sheet').hidden=true;$('#fmt').hidden=true;lockBody(false);editing=null;
     thumbUrls.forEach(function(u){URL.revokeObjectURL(u)});thumbUrls=[];
   }
@@ -376,14 +511,43 @@
   }
 
   /* ---------- 사진 읽기(이 기기에서 OCR) ---------- */
-  async function readPhotos(fileList){
-    var files=Array.from(fileList||[]).filter(function(f){return /^image\//.test(f.type)});
+  var queue=[], queueUrls=[], MAXQ=12;
+  function renderQueue(){
+    queueUrls.forEach(function(u){URL.revokeObjectURL(u)});queueUrls=[];
+    var box=$('#queue');
+    box.hidden=!queue.length;
+    box.innerHTML=queue.map(function(f,i){
+      var u=URL.createObjectURL(f);queueUrls.push(u);
+      return '<span class="qi"><img src="'+u+'" alt="올릴 사진 '+(i+1)+'"><button type="button" data-qrm="'+i+'" aria-label="사진 '+(i+1)+' 빼기">✕</button></span>';
+    }).join('');
+    $('#photo-go').hidden=!queue.length||busy;
+    $('#photo-go').textContent='읽기 시작 ('+queue.length+'장)';
+    $('#photo-btn').textContent=queue.length?'사진 더 추가':'사진 올리기';
+  }
+  function addToQueue(fileList){
+    var fs=Array.from(fileList||[]).filter(function(f){return /^image\//.test(f.type)});
+    if(!fs.length)return;
+    var room=MAXQ-queue.length;
+    if(fs.length>room){toast('한 번에 '+MAXQ+'장까지 읽을 수 있어요');fs=fs.slice(0,Math.max(room,0))}
+    queue=queue.concat(fs);
+    renderQueue();
+    setStat(queue.length+'장을 골랐어요. 더 올리거나 "읽기 시작"을 눌러 주세요.');
+  }
+  function loadImg(file){
+    return new Promise(function(res,rej){
+      var u=URL.createObjectURL(file), im=new Image();
+      im.onload=function(){URL.revokeObjectURL(u);res(im)};
+      im.onerror=function(){URL.revokeObjectURL(u);rej(new Error('img'))};
+      im.src=u;
+    });
+  }
+  async function readPhotos(){
+    var files=queue.slice();
     if(!files.length||busy)return;
-    if(files.length>8){toast('한 번에 8장까지 읽을 수 있어요');files=files.slice(0,8)}
-    if(!window.Tesseract){setStat('글자 인식 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.',true);$('#f-photo').value='';return}
+    if(!window.Tesseract){setStat('글자 인식 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.',true);return}
     busy=true;cancelled=false;
-    $('#photo-btn').disabled=true;$('#photo-stop').hidden=false;
-    var keepKey=editing||'draft', texts=[], words=[];
+    $('#photo-btn').disabled=true;$('#photo-go').hidden=true;$('#photo-stop').hidden=false;
+    var keepKey=editing||'draft', texts=[], words=[], pages=[];
     try{
       setStat('글자 인식 준비 중이에요. 처음 한 번은 한글 데이터를 내려받느라 1분 가까이 걸려요.');
       worker=await Tesseract.createWorker('kor+eng',1,{logger:function(m){
@@ -394,11 +558,16 @@
         if(cancelled)throw {cancelled:true};
         setStat('사진 '+(i+1)+'/'+files.length+' 읽는 중');
         var r=await worker.recognize(files[i]);
+        var pw=r.data.words||[], pills=[];
+        if(pw.filter(function(w){return dayNum(w)}).length>=14){
+          try{pills=findPills(await loadImg(files[i]))}catch(x){}
+        }
         texts.push(r.data.text||'');
-        (r.data.words||[]).forEach(function(w){words.push(w)});
+        pw.forEach(function(w){words.push(w)});
+        pages.push({words:pw,pills:pills});
       }
       if(cancelled)throw {cancelled:true};
-      var res=parseOCR(texts.join('\n'),words);
+      var res=parseOCR(texts.join('\n'),words,pages);
       if(res.store&&!getVal('store'))$('#f-store').value=res.store;
       if(res.offer&&!getVal('offer'))$('#f-offer').value=res.offer;
       if(res.deadline&&!getVal('deadline'))$('#f-date').value=res.deadline;
@@ -411,20 +580,22 @@
         var T=templates[pname]||{};
         ['offer','keywords','phone','notice'].forEach(function(f){
           var lab=res.labels[f];
-          if(lab){
+          if(lab&&lab.length<=20&&!/줄$/.test(lab)){
             var list=String(T[f]||'').split(',').map(function(x){return x.trim()}).filter(Boolean);
             if(list.indexOf(lab)<0&&DEF[f].indexOf(lab)<0){list.push(lab);T[f]=list.join(', ');learned=true}
           }
         });
-        if(learned){templates[pname]=T;lsSet(TPL,templates)}
-        else if(!templates[pname]){templates[pname]=T;lsSet(TPL,templates)}
+        if(learned||!templates[pname]){templates[pname]=T;lsSet(TPL,templates)}
         renderPhotoBox();
       }
       miss=REQ.filter(function(k){return !getVal(k)});
       paintMiss();
-      var tail=res.calendar?' 마감일은 달력 표시를 보고 추정했으니 한 번 확인해 주세요.':'';
+      var tail='';
+      if(res.calendar)tail=' 마감일은 달력의 마감 표시를 보고 넣었으니 한 번 확인해 주세요.';
+      else if(res.fromRange)tail=' 마감일은 기간의 끝 날짜로 넣었어요.';
+      queue=[];
       if(miss.length){
-        pendingImgs=pendingImgs.concat(files).slice(0,8);
+        pendingImgs=pendingImgs.concat(files).slice(0,MAXQ);
         await idbPut(keepKey,pendingImgs);renderImgs();
         setStat(miss.length+'개 항목을 못 읽었어요: '+miss.map(function(k){return FN[k]}).join(', ')+'. 사진을 보고 빨간 칸을 적어 주세요.'+tail,true);
       }else{
@@ -433,10 +604,11 @@
       }
       saveDraft();
     }catch(e){
-      if(e&&e.cancelled){setStat('읽기를 취소했어요.')}
+      if(e&&e.cancelled){setStat('읽기를 취소했어요. 고른 사진은 그대로 있어요.')}
       else{
+        queue=[];
         miss=REQ.filter(function(k){return !getVal(k)});paintMiss();
-        pendingImgs=pendingImgs.concat(files).slice(0,8);
+        pendingImgs=pendingImgs.concat(files).slice(0,MAXQ);
         await idbPut(keepKey,pendingImgs);renderImgs();
         setStat('사진을 읽다가 문제가 생겼어요. 직접 적어 주세요.',true);saveDraft();
       }
@@ -445,6 +617,7 @@
       try{if(worker)await worker.terminate()}catch(x){}
       worker=null;
       $('#photo-btn').disabled=false;$('#photo-stop').hidden=true;$('#f-photo').value='';
+      renderQueue();
     }
   }
 
@@ -533,7 +706,12 @@
     formKw.splice(+b.dataset.rm,1);renderKw();saveDraft();
   });
   $('#photo-btn').addEventListener('click',function(){$('#f-photo').click()});
-  $('#f-photo').addEventListener('change',function(e){readPhotos(e.target.files)});
+  $('#f-photo').addEventListener('change',function(e){addToQueue(e.target.files);e.target.value=''});
+  $('#photo-go').addEventListener('click',readPhotos);
+  $('#queue').addEventListener('click',function(e){
+    var b=e.target.closest('[data-qrm]');if(!b||busy)return;
+    queue.splice(+b.dataset.qrm,1);renderQueue();setStat(queue.length?queue.length+'장을 골랐어요.':'');
+  });
   $('#photo-stop').addEventListener('click',function(){cancelled=true;if(worker){try{worker.terminate()}catch(x){}}});
   $('#imgs-del').addEventListener('click',deleteImgs);
   $('#thumbs').addEventListener('click',function(e){
@@ -594,5 +772,5 @@
       document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')check()});
     }).catch(function(){});
   }
-  window.__chexdan={parseOCR:parseOCR};
+  window.__chexdan={parseOCR:parseOCR,findPills:findPills};
 })();
