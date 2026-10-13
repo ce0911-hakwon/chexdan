@@ -6,7 +6,7 @@
   var REQ=['store','offer','deadline','phone','platform','keywords','notice'];
   var FN={store:'가게 이름',offer:'제공 내역',deadline:'마감일',phone:'연락처',platform:'플랫폼',keywords:'필수 키워드',notice:'예약 유의사항'};
   var items=[], templates={}, editing=null, filter='active', pf='', delTimer=null;
-  var formPlat='', customOpen=false, formKw=[], miss=[], pendingImgs=[], thumbUrls=[];
+  var formPlat='', customOpen=false, formKw=[], formKw2=[], miss=[], pendingImgs=[], thumbUrls=[];
   var busy=false, cancelled=false, worker=null, fmtPlat='';
   var $=function(s){return document.querySelector(s)};
 
@@ -109,6 +109,10 @@
   }
   function headingOf(line,table){
     var n=norm(cleanLine(line));
+    var km=cleanLine(line).match(/^[^\p{L}\d]*(필수|선택|메인|서브|추가|공통)?\s*(키워드|해시태그)\s*(정보|목록|안내)?\s*([:：]\s*(.*)|)$/u);
+    if(km&&(km[4]||!km[0].replace(/^[^\p{L}\d]*/u,'').replace(/(필수|선택|메인|서브|추가|공통)?\s*(키워드|해시태그)\s*(정보|목록|안내)?/,'').trim())){
+      return {f:'keywords',s:(km[1]||'')+'키워드',k:/선택|서브|추가/.test(km[1]||'')?'opt':'req',inline:(km[5]||'').trim()};
+    }
     if(!n||n.length>40)return null;
     for(var i=0;i<table.length;i++){
       var sn=norm(table[i][1]);
@@ -291,8 +295,9 @@
       for(var i=0;i<lines.length;i++){
         if(!hs[i]||hs[i].f!==f)continue;
         var body=[];
+        if(hs[i].inline)body.push(hs[i].inline);
         for(var j=i+1;j<lines.length&&!hs[j]&&!isBreak(lines[j]);j++)body.push(lines[j]);
-        res.push({head:hs[i].s,z:!!hs[i].z,body:body});
+        res.push({head:hs[i].s,z:!!hs[i].z,k:hs[i].k||'req',body:body});
       }
       if(res.length)out.labels[f]=res[0].head;
       return res;
@@ -307,12 +312,19 @@
     }
     var o=[];sections('offer').forEach(function(s){s.body.forEach(function(l){o.push(l)})});
     if(o.length)out.offer=o.join('\n');
-    var kb=[];sections('keywords').forEach(function(s){s.body.forEach(function(l){kb.push(l)})});
-    if(kb.length){
-      var kws=[];
-      kb.join(' ').split(/[\s,#_]+/).forEach(function(x){if(x.length>=2&&kws.indexOf(x)<0&&norm(x)!=='복사')kws.push(x)});
-      out.keywords=kws.slice(0,20);
-    }
+    var kreq=[],kopt=[];
+    sections('keywords').forEach(function(sec){
+      var dst=sec.k==='opt'?kopt:kreq;
+      sec.body.forEach(function(l){
+        var parts=/[,，、]/.test(l)?l.split(/[,，、]+/):l.split(/[\s#_]+/);
+        parts.forEach(function(x){
+          x=x.replace(/^[\s#]+|[\s.。]+$/g,'');
+          if(x.length>=2&&dst.indexOf(x)<0&&norm(x)!=='복사'&&!/^(필수|선택)$/.test(x))dst.push(x);
+        });
+      });
+    });
+    if(kreq.length)out.keywords=kreq.slice(0,20);
+    if(kopt.length)out.keywords2=kopt.slice(0,20);
     var nt=[];
     sections('notice').forEach(function(s){
       var withHead=DEF.notice.indexOf(s.head)<0;
@@ -355,11 +367,13 @@
       h+='<div class="tel-row"><a class="tel" href="tel:'+esc(it.phone.replace(/[^\d+]/g,''))+'">'+esc(it.phone)+'</a>'
         +'<button type="button" class="mini" data-act="copy" data-id="'+id+'">복사</button></div>';
     }
-    var kws=it.keywords||[];
-    if(kws.length){
-      h+='<div class="kws">'+kws.map(function(k){return '<span class="kw">'+esc(k)+'</span>'}).join('')
-        +'<button type="button" class="mini" data-act="copykw" data-id="'+id+'">키워드 복사</button></div>';
-    }
+    [['keywords','필수','copykw'],['keywords2','선택','copykw2']].forEach(function(g){
+      var kws=it[g[0]]||[];
+      if(kws.length){
+        h+='<div class="kws">'+(it.keywords2&&it.keywords2.length?'<span class="kwl">'+g[1]+'</span>':'')+kws.map(function(k){return '<span class="kw">'+esc(k)+'</span>'}).join('')
+          +'<button type="button" class="mini" data-act="'+g[2]+'" data-id="'+id+'">키워드 복사</button></div>';
+      }
+    });
     if(it.notice)h+='<details class="note"><summary>예약 유의사항</summary><p>'+esc(it.notice)+'</p></details>';
     if(it.memo)h+='<p class="memo">'+esc(it.memo)+'</p>';
     h+='<div class="acts"><button type="button" class="btn" data-act="done" data-id="'+id+'">'+(it.done?'완료 취소':'완료 처리')+'</button>'
@@ -418,13 +432,16 @@
   }
   function renderChips(){$('#plats').innerHTML=chipsHTML(formPlat,customOpen,'+ 직접 입력');$('#f-custom').hidden=!customOpen}
   function renderKw(){
-    $('#kwlist').innerHTML=formKw.map(function(k,i){
-      return '<span class="kw">'+esc(k)+'<button type="button" data-rm="'+i+'" aria-label="'+esc(k)+' 삭제">✕</button></span>';
-    }).join('');
+    [[formKw,'#kwlist'],[formKw2,'#kwlist2']].forEach(function(g){
+      $(g[1]).innerHTML=g[0].map(function(k,i){
+        return '<span class="kw">'+esc(k)+'<button type="button" data-rm="'+i+'" aria-label="'+esc(k)+' 삭제">✕</button></span>';
+      }).join('');
+    });
   }
-  function addKw(str){
+  function addKw(str,two){
+    var arr=two?formKw2:formKw;
     String(str||'').split(/[,\n#]+/).forEach(function(x){
-      x=x.trim();if(x&&formKw.indexOf(x)<0&&formKw.length<30)formKw.push(x);
+      x=x.trim();if(x&&arr.indexOf(x)<0&&arr.length<30)arr.push(x);
     });
     renderKw();
   }
@@ -447,7 +464,7 @@
     if(editing)return;
     lsSet(DRAFT,{store:$('#f-store').value,offer:$('#f-offer').value,deadline:$('#f-date').value,phone:$('#f-phone').value,
       notice:$('#f-notice').value,memo:$('#f-memo').value,platform:formPlat,customOpen:customOpen,custom:$('#f-custom').value,
-      keywords:formKw,miss:miss});
+      keywords:formKw,keywords2:formKw2,miss:miss});
   }
   function lockBody(on){document.body.style.overflow=on?'hidden':''}
   function openSheet(id){
@@ -461,11 +478,11 @@
     $('#f-phone').value=d.phone||'';
     $('#f-notice').value=d.notice||'';
     $('#f-memo').value=d.memo||'';
-    $('#f-kw').value='';
+    $('#f-kw').value='';$('#f-kw2').value='';
     formPlat=d.platform||'';
     customOpen=!it&&!!d.customOpen;
     $('#f-custom').value=customOpen?(d.custom||''):'';
-    formKw=(d.keywords||[]).slice();
+    formKw=(d.keywords||[]).slice();formKw2=(d.keywords2||[]).slice();
     miss=(it?(it.fix||[]):(d.miss||[])).slice();
     pendingImgs=[];
     $('#err').textContent='';setStat('');
@@ -491,9 +508,10 @@
     if(!store){err.textContent='가게 이름을 입력해 주세요.';$('#f-store').focus();return}
     if(!date){err.textContent='마감일을 선택해 주세요.';$('#f-date').focus();return}
     if($('#f-kw').value.trim())addKw($('#f-kw').value);
+    if($('#f-kw2').value.trim())addKw($('#f-kw2').value,1);
     refreshMiss();
     var base={store:store,offer:$('#f-offer').value.trim(),deadline:date,phone:$('#f-phone').value.trim(),platform:getVal('platform'),
-      keywords:formKw.slice(),notice:$('#f-notice').value.trim(),memo:$('#f-memo').value.trim()};
+      keywords:formKw.slice(),keywords2:formKw2.slice(),notice:$('#f-notice').value.trim(),memo:$('#f-memo').value.trim()};
     var it;
     if(editing){it=items.find(function(i){return i.id===editing});Object.assign(it,base)}
     else{it=Object.assign({id:uid(),done:false,created:Date.now()},base);items.push(it);lsDel(DRAFT)}
@@ -574,6 +592,7 @@
       if(res.phone&&!getVal('phone'))$('#f-phone').value=res.phone;
       if(res.notice&&!getVal('notice'))$('#f-notice').value=res.notice;
       if(res.keywords)addKw(res.keywords.join(','));
+      if(res.keywords2)addKw(res.keywords2.join(','),1);
       if(res.platform&&!getVal('platform')){formPlat=res.platform;customOpen=false;renderChips()}
       var pname=getVal('platform'), learned=false;
       if(pname){
@@ -679,6 +698,7 @@
     var a=b.dataset.act;
     if(a==='edit')openSheet(it.id);
     else if(a==='copy')copyText(it.phone,'번호를 복사했어요');
+    else if(a==='copykw2')copyText((it.keywords2||[]).join(', '),'선택 키워드를 복사했어요');
     else if(a==='copykw')copyText((it.keywords||[]).join(', '),'키워드를 복사했어요');
     else if(a==='done'){it.done=!it.done;saveItems();render();toast(it.done?'완료 처리했어요':'진행 중으로 되돌렸어요')}
   });
@@ -701,9 +721,15 @@
   $('#f-kw').addEventListener('keydown',function(e){
     if(e.key==='Enter'){e.preventDefault();addKw(e.target.value);e.target.value='';saveDraft();refreshMiss()}
   });
-  $('#kwlist').addEventListener('click',function(e){
-    var b=e.target.closest('[data-rm]');if(!b)return;
-    formKw.splice(+b.dataset.rm,1);renderKw();saveDraft();
+  $('#kw-add2').addEventListener('click',function(){addKw($('#f-kw2').value,1);$('#f-kw2').value='';saveDraft()});
+  $('#f-kw2').addEventListener('keydown',function(e){
+    if(e.key==='Enter'){e.preventDefault();addKw(e.target.value,1);e.target.value='';saveDraft()}
+  });
+  [['#kwlist',function(){return formKw}],['#kwlist2',function(){return formKw2}]].forEach(function(g){
+    $(g[0]).addEventListener('click',function(e){
+      var b=e.target.closest('[data-rm]');if(!b)return;
+      g[1]().splice(+b.dataset.rm,1);renderKw();saveDraft();refreshMiss();
+    });
   });
   $('#photo-btn').addEventListener('click',function(){$('#f-photo').click()});
   $('#f-photo').addEventListener('change',function(e){addToQueue(e.target.files);e.target.value=''});
